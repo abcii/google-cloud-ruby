@@ -194,9 +194,11 @@ module Google
         end
         alias_method :run, :get
 
+        # rubocop:disable all
+
         def create doc_path, data
           if Convert.is_nested data, :DELETE
-            raise ArgumentError, "DELETE not allowed on create"
+            fail ArgumentError, "DELETE not allowed on create"
           end
 
           ensure_not_closed!
@@ -208,9 +210,9 @@ module Google
                           end
           fail ArgumentError, "data must be a Hash" unless data.is_a? Hash
 
-          data, server_time_pairs = Convert.remove_from data, :SERVER_TIME
+          data, server_time_paths = Convert.remove_from data, :SERVER_TIME
 
-          if data.any? || server_time_pairs.empty?
+          if data.any? || server_time_paths.empty?
             write = Google::Firestore::V1beta1::Write.new(
               update: Google::Firestore::V1beta1::Document.new(
                 name: full_doc_path,
@@ -221,24 +223,16 @@ module Google
             @writes << write
           end
 
-          if server_time_pairs.any?
-            field_transforms = server_time_pairs.map do |server_time_pair|
-              Google::Firestore::V1beta1::DocumentTransform::FieldTransform.new(
-                field_path: server_time_pair,
-                set_to_server_value: :REQUEST_TIME
-              )
-            end
-            write = Google::Firestore::V1beta1::Write.new(
-              transform: Google::Firestore::V1beta1::DocumentTransform.new(
-                document: full_doc_path,
-                field_transforms: field_transforms
-              )
-            )
+          if server_time_paths.any?
+            transform_write = Convert.transform_write full_doc_path,
+                                                      server_time_paths
+
             if data.empty?
-              write.current_document = \
+              transform_write.current_document = \
                 Google::Firestore::V1beta1::Precondition.new(exists: false)
             end
-            @writes << write
+
+            @writes << transform_write
           end
 
           nil
@@ -255,7 +249,7 @@ module Google
           fail ArgumentError, "data must be a Hash" unless data.is_a? Hash
 
           data, delete_paths = Convert.remove_from data, :DELETE
-          raise ArgumentError, "DELETE not allowed on set" if delete_paths.any?
+          fail ArgumentError, "DELETE not allowed on set" if delete_paths.any?
 
           data, server_time_paths = Convert.remove_from data, :SERVER_TIME
 
@@ -270,16 +264,7 @@ module Google
               # extract the leaf node field paths from data
               field_paths = Convert.extract_leaf_nodes data
             else
-              field_paths = Array(merge).map do |inner_field_path|
-                if inner_field_path.is_a? Array
-                  paths = inner_field_path.map do |field_path|
-                    Convert.escape_field_path field_path.to_s
-                  end
-                  paths.join(".")
-                else
-                  inner_field_path
-                end
-              end
+              field_paths = Convert.extract_field_paths_from merge
             end
 
             # Ensure provided field paths are valid.
@@ -287,17 +272,17 @@ module Google
             verify_paths = field_paths - server_time_paths
             all_valid_check = verify_paths.map do |verify_path|
               all_valid.include?(verify_path) ||
-                all_valid.select { |fp| fp.start_with? "#{verify_path}." }.any?
+              all_valid.select { |fp| fp.start_with? "#{verify_path}." }.any?
             end
             all_valid_check = all_valid_check.include? false
-            raise ArgumentError, "all fields must be in data" if all_valid_check
+            fail ArgumentError, "all fields must be in data" if all_valid_check
 
             # Choose only the data there are field paths for
             data = Convert.select_by_field_paths data, verify_paths
 
             if data.empty?
               if merge == true
-                raise ArgumentError, "data required for merge: true"
+                fail ArgumentError, "data required for merge: true"
               end
               write = nil
             else
@@ -314,18 +299,8 @@ module Google
           @writes << write if write
 
           if server_time_paths.any?
-            field_transforms = server_time_paths.map do |server_time_pair|
-              Google::Firestore::V1beta1::DocumentTransform::FieldTransform.new(
-                field_path: server_time_pair,
-                set_to_server_value: :REQUEST_TIME
-              )
-            end
-            transform_write = Google::Firestore::V1beta1::Write.new(
-              transform: Google::Firestore::V1beta1::DocumentTransform.new(
-                document: full_doc_path,
-                field_transforms: field_transforms
-              )
-            )
+            transform_write = Convert.transform_write full_doc_path,
+                                                      server_time_paths
             @writes << transform_write
           end
 
@@ -378,31 +353,23 @@ module Google
           end
 
           if server_time_paths.any?
-            field_transforms = server_time_paths.map do |server_time_pair|
-              Google::Firestore::V1beta1::DocumentTransform::FieldTransform.new(
-                field_path: server_time_pair,
-                set_to_server_value: :REQUEST_TIME
-              )
-            end
-            write = Google::Firestore::V1beta1::Write.new(
-              transform: Google::Firestore::V1beta1::DocumentTransform.new(
-                document: full_doc_path,
-                field_transforms: field_transforms
-              )
-            )
+            transform_write = Convert.transform_write full_doc_path,
+                                                      server_time_paths
             if data.empty?
-              write.current_document = \
+              transform_write.current_document = \
                 Google::Firestore::V1beta1::Precondition.new(exists: true)
             end
-            @writes << write
+            @writes << transform_write
           end
 
           nil
         end
 
+        # rubocop:enable all
+
         def delete doc_path, exists: nil, update_time: nil
           if !exists.nil? && !update_time.nil?
-            raise ArgumentError, "cannot specify both exists and update_time"
+            fail ArgumentError, "cannot specify both exists and update_time"
           end
 
           ensure_not_closed!

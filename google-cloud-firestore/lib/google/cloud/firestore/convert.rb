@@ -22,9 +22,8 @@ module Google
       ##
       # @private Helper module for converting Protobuf values.
       module Convert
+        # rubocop:disable all
         module ClassMethods
-          # rubocop:disable all
-
           def time_to_timestamp time
             return nil if time.nil?
 
@@ -156,7 +155,7 @@ module Google
               else
                 if value.is_a? Array
                   if is_nested value, target
-                    raise ArgumentError, "cannot nest #{target} under arrays"
+                    fail ArgumentError, "cannot nest #{target} under arrays"
                   end
                 end
 
@@ -228,6 +227,10 @@ module Google
             left_hash
           end
 
+          START_FIELD_PATH_CHARS = /\A[a-zA-Z_]/
+          INVALID_FIELD_PATH_CHARS = /[\~\*\/\[\]]/
+          ESCAPED_FIELD_PATH = /\A\`(.*)\`\z/
+
           def extract_field_paths hash
             invalid_field_path_chars = /[\~\*\/\[\]]/
 
@@ -236,14 +239,14 @@ module Google
               tmp_dup = dup_hash
               last_key = nil
               keys.to_s.split(".").each do |key|
-                raise ArgumentError, "empty paths not allowed" if key.empty?
-                if invalid_field_path_chars.match key
-                  raise ArgumentError, "invalid character"
+                fail ArgumentError, "empty paths not allowed" if key.empty?
+                if INVALID_FIELD_PATH_CHARS.match key
+                  fail ArgumentError, "invalid character"
                 end
                 tmp_dup = tmp_dup[last_key] unless last_key.nil?
                 last_key = key
                 if !tmp_dup[key].nil?
-                  raise ArgumentError, "one field cannot be a prefix of another"
+                  fail ArgumentError, "one field cannot be a prefix of another"
                 end
                 tmp_dup[key] = {}
               end
@@ -253,8 +256,10 @@ module Google
           end
 
           def escape_field_path str
-            str = String(str)
-            return str if str =~ /\A[a-zA-Z_]/
+            str = String str
+
+            return "`#{str}`" if INVALID_FIELD_PATH_CHARS.match str
+            return str if START_FIELD_PATH_CHARS.match str
 
             "`#{str}`"
           end
@@ -267,14 +272,41 @@ module Google
           end
 
           def unescape_field_node str
-            escaped_field_path_regexp = /\A\`(.*)\`\z/
-            match = escaped_field_path_regexp.match str
+            match = ESCAPED_FIELD_PATH.match str
             return match[1] if match
             str
           end
 
-          # rubocop:enable all
+          def extract_field_paths_from merge
+            Array(merge).map do |inner_field_path|
+              if inner_field_path.is_a? Array
+                paths = inner_field_path.map do |field_path|
+                  escape_field_path field_path
+                end
+                paths.join "."
+              else
+                inner_field_path
+              end
+            end
+          end
+
+          def transform_write doc_path, paths, server_value: :REQUEST_TIME
+            field_transforms = paths.map do |path|
+              Google::Firestore::V1beta1::DocumentTransform::FieldTransform.new(
+                field_path: path,
+                set_to_server_value: server_value
+              )
+            end
+
+            Google::Firestore::V1beta1::Write.new(
+              transform: Google::Firestore::V1beta1::DocumentTransform.new(
+                document: doc_path,
+                field_transforms: field_transforms
+              )
+            )
+          end
         end
+        # rubocop:enable all
 
         extend ClassMethods
       end
